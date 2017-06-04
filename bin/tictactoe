@@ -1,0 +1,217 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'abbrev'
+require_relative '../lib/tictactoe'
+
+# A class wrapping up a tic-tac-toe CLI so the Object space isn't polluted with
+# extra methods from here, for the sake of best practices.
+class TicTacToeCLI # rubocop:disable Metrics/ClassLength
+  # The current board, which is a +TicTacToe+
+  @board = nil
+  # The current number of games played
+  @game_count = 0
+  # Whose turn it is, in the form of +[player, token]+
+  @turn = nil
+
+  # A mapping of commands along with their callables and descriptions
+  COMMANDS = {
+    'play' => { proc: -> { play }, desc: 'Starts a new game' },
+    'show' => { proc: -> { show }, desc: 'Shows the current board' },
+    'whoami' => { proc: -> { whoami }, desc: 'Tell you whose turn it is' },
+    'help' => { proc: -> { usage }, desc: 'Prints this usage information' },
+    'quit' => { proc: -> { quit }, desc: 'Quits the application' }
+  }.freeze
+
+  # Warns the user that a bad/unknown command was issued.
+  def self.bad_command
+    warn <<~EOS
+      I didn't understand that command, Dave.
+      Please try again (or use 'help').
+    EOS
+  end
+
+  # Returns the farewell message printed to the user as a +String+.
+  def self.goodbye_message
+    'So long and thanks for all the games!'
+  end
+
+  # Looks up the matching +Proc+ in +COMMANDS+ for the given +string+.
+  # This string can be a partial, such that a user could use 'p' or 'play' to
+  # start a new game, or 'q' or 'qu' or 'quit' to quit the application.
+  #
+  # Params:
+  # +string+:: +String+ read in during the main/play loop
+  def self.look_up_command(string)
+    key = COMMANDS.keys.abbrev[string]
+    COMMANDS.dig key, :proc
+  end
+
+  # This is the entry point if this script is run from the command line.
+  def self.main
+    puts welcome_message
+    loop do
+      command = look_up_command prompt
+      next bad_command if command.nil?
+      command.call
+    end
+  end
+
+  # The start of playing a new game, which greets players, gathers names from
+  # them, decides a playing order, and then enters the actual playing loop where
+  # players make moves on the board
+  #
+  # The looping for playing a game goes:
+  #   - #play_board # loops until the board is complete
+  #     - #player_turn # loops until the player selects a valid spot
+  #       - #player_move # loops until the player enters a valid command/move
+  # see: #play_board
+  def self.play
+    @game_count += 1
+    puts "Welcome to game ##{@game_count}!"
+    @board = TicTacToe.new
+    player1 = prompt "Please enter the first player's name:"
+    player2 = prompt "Please enter the second player's name:"
+    @order = player_order player1, player2
+    puts <<~EOS
+      Okay, #{@player1} will be Xs and #{@player2} will be Os for this game.
+      #{@order.first[0]} goes first!
+    EOS
+    play_board
+  end
+
+  # The play loop for the current board that will exit if the game is over or if
+  # a user asks to quit.
+  #
+  # see: #player_turn
+  def self.play_board
+    until @board.game_over?
+      player, token, move = player_turn
+      @board.place token, move
+      puts @board.pretty
+      puts "Congratulations #{player}, you won!" if @board.won?
+      puts 'This game is a stalemate!' if @board.stalemate?
+    end
+    @board = nil
+    @turn = nil
+    puts "Type 'play' to play again."
+  end
+
+  # Returns an +Enumerator+ of player turn orders for a game, decided randomly.
+  # Each element in the +Enumerator+ is made up of two elements: the player's
+  # name as a +String+ and the player's token ('X' or 'O') as a +String+.
+  #
+  # Params:
+  # +player1+:: +String+
+  # +player2+:: +String+
+  def self.player_order(player1, player2)
+    order = [[player1, 'X'], [player2, 'O']]
+    order[0], order[1] = order[1], order[0] if rand >= 0.5
+    order.cycle 5
+  end
+
+  # The player move loop that exits when a player has selected a valid move or
+  # exited the application. The returned move is an +Integer+ representing the
+  # index on the board where they want their token placed.
+  #
+  # Params:
+  # +player+:: +String+
+  def self.player_move(player)
+    move = nil
+    loop do
+      input = prompt("What is your next move #{player} (1-9)?")
+      command = look_up_command input
+      next unless valid_game_command_input? command, input
+      next command.call unless command.nil?
+      move = input.to_i - 1
+      break
+    end
+    move
+  end
+
+  # The player turn loop that validates the move returned from #player_move. A
+  # 3-element +Array+ of +[player, token, move]+ is returned back up to the
+  # #play_board loop because it needs all that sort of information to inform the
+  # players.
+  def self.player_turn
+    @turn = @order.next
+    player, token = @turn
+    move = -1
+    while @board.occupied?(move) || @board.out_of_bounds?(move)
+      move = player_move player
+      warn 'That spot is occupied!' if @board.occupied?(move)
+      warn 'That spot is out of bounds!' if @board.out_of_bounds?(move)
+    end
+    [player, token, move]
+  end
+
+  # Prompts and receives STDIN input, returning the input received.
+  #
+  # Params:
+  # +char+:: The +String+ prompt to use to ask the user for command-line input
+  def self.prompt(char = '>')
+    print "#{char} "
+    gets.chomp
+  end
+
+  # Quits the application after printing a goodbye message.
+  def self.quit
+    puts goodbye_message
+    exit
+  end
+
+  # Prints the current status of the board to STDOUT.
+  def self.show
+    return puts 'There is no game being played right now.' if @board.nil?
+    puts @board.pretty
+  end
+
+  # Prints usage for this script to STDOUT.
+  def self.usage
+    puts 'All Commands:'
+    puts '-' * 79
+    COMMANDS.each do |k, v|
+      puts "#{k}:"
+      puts "    #{v[:desc]}\n\n"
+    end
+  end
+
+  # Returns whether or not the given +command+ and +input+ are valid in the
+  # context of a game.
+  # If the given command/input are not valid, the user is warned (as they're) in
+  # the middle of a game and need good feedback).
+  #
+  # Params:
+  # +command+:: +Proc+ to call, see COMMANDS
+  # +input+:: +String+ must be a possible board move if there is no +command+
+  def self.valid_game_command_input?(command, input)
+    if command == COMMANDS.dig('play', :proc)
+      warn "You can't play a game if you're already playing!"
+      return false
+    end
+    if command.nil? && input !~ /\A\d\z/
+      warn "Your move needs to be #{COMMANDS.keys.join ', '} or 1-9!"
+      return false
+    end
+    true
+  end
+
+  # Returns the welcome message that greets users when running the script.
+  def self.welcome_message
+    <<~EOS
+      Hello and welcome to Tic-Tac-Toe!
+      To get started playing right away, simply type 'play'.
+      For more information or assistance, you can always type 'help'.
+      Thanks for playing and please enjoy!
+    EOS
+  end
+
+  # Prints the current player and their token to STDOUT.
+  def self.whoami
+    return puts 'There is no game being played right now.' if @turn.nil?
+    player, token = @turn
+    puts "It is currently #{player}'s turn, and they are '#{token}'."
+  end
+end
+
+TicTacToeCLI.main if $PROGRAM_NAME == __FILE__
